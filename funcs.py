@@ -97,11 +97,12 @@ def book_list_to_name_map(lst):
 
 async def get_books_with_index(books_set_url, page_index):
     book_set_url_with_index = f"{books_set_url}/{page_index}"
+    print(f"starting get {book_set_url_with_index}")
     get_books_resp = requests.get(book_set_url_with_index)
     books_info = get_books_resp.json()
     if books_info["success"] != 1:
         print('get books failed, success code: %c'.format(books_info))
-
+    print(f"get {book_set_url_with_index} complete")
     return books_info
 
 

@@ -12,12 +12,14 @@ from webdriver_download import webdriver_download, login, ran_out_download_limit
     remove_from_waiting_download_set
 import json
 from os import walk
+import time
 
 
 async def get_file_download_info(book_set_url_base, download_files, exclude_downloaded_file_names,
                                  lib_book_set_ids):
     books = []
     tasks = []
+    results = []
     for lib_book_set_id in lib_book_set_ids:
         url = f"{book_set_url_base}/{lib_book_set_id}/get-books"
         # get info
@@ -27,29 +29,25 @@ async def get_file_download_info(book_set_url_base, download_files, exclude_down
             f"book set id: {lib_book_set_id}, url: {url}, info: {book_set_info}, starting getting all books info in this page")
 
         for index in range(0, book_set_info["total_pages"], 1):
-            tasks.append(get_books_with_index(url, index))
+            results.append(await get_books_with_index(url, index))
     print(f"Starting get books infos , len: {len(tasks)}")
-    results = await asyncio.gather(*tasks)
+
     for book_info in results:
         books.extend(book_info["books"])
-    print(f"waiting_for_download_files: {len(books)}")
-    print(f"books {len(books)}")
     waiting_for_download_files = {}
-    waiting_for_download_files_only_name = set([])
-    downloaded_files_only_name = set([])
+    waiting_for_download_files_only_name = set()
+    downloaded_files_only_name = set()
     for b in books:
         downloaded = False
         for download_book in download_files:
             title = b["book"]["title"]
             if title in download_book:
-                # print(f"{title} in {download_book}")
                 downloaded = True
                 break
         if not downloaded:
             for exclude_downloaded_file_name in exclude_downloaded_file_names:
                 title = b["book"]["title"]
                 if exclude_downloaded_file_name in title:
-                    # print(f"{exclude_downloaded_file_name} in {title}, be excluded")
                     downloaded = True
                     break
         if not downloaded:
@@ -78,6 +76,14 @@ def get_file_names(ebooks_path, exclude_downloaded_dirs):
     return download_files
 
 
+def write_array_file(file_path, data, encoding="utf-8"):
+    with open(file_path, 'w', encoding=encoding) as f:
+        f.write("[\n")
+        for line in data:
+            f.write(f"{line},\n")
+        f.write("]")
+
+
 async def main():
     try:
         with open("./settings.yml", 'r') as stream:
@@ -88,8 +94,6 @@ async def main():
 
     logout_url = data_loaded["logout_url"]
     accounts = data_loaded["accounts"]
-    if accounts == None:
-        accounts = []
 
     downloaded_dirs = data_loaded["downloaded_dirs"]
     exclude_downloaded_file_names = data_loaded["exclude_downloaded_file_names"]
@@ -106,6 +110,7 @@ async def main():
     waiting_for_download_files_file_name = data_loaded["waiting_for_download_files_file_name"]
     waiting_for_download_files_only_name_file_name = data_loaded["waiting_for_download_files_only_name_file_name"]
     downloaded_files_only_name_file_name = data_loaded["downloaded_files_only_name_file_name"]
+    new_download_files_name = data_loaded["new_download_files_name"]
     account_waiting_time = data_loaded["account_waiting_time"]
 
     lib_book_set_ids = data_loaded["lib_book_set_ids"]
@@ -117,21 +122,50 @@ async def main():
         book_set_url_base, download_files, exclude_downloaded_file_names, lib_book_set_ids)
 
     print("Starting to use webdriver..........")
+    new_download_files = await  download_books(account_waiting_time, accounts, book_detail_url_base,
+                                               book_list_owner_cookies,
+                                               book_set_url_base, download_book_list_id, logout_success_redirect_url,
+                                               logout_url,
+                                               waiting_for_download_files)
 
-    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()))
+    print("Starting to get books information......")
+    if len(new_download_files) != 0:
+        download_files = await get_download_files(downloaded_dirs, exclude_downloaded_dirs)
 
+        downloaded_files_only_name, waiting_for_download_files, waiting_for_download_files_only_name = await get_file_download_info(
+            book_set_url_base, download_files, exclude_downloaded_file_names, lib_book_set_ids)
+    print("Starting write download info files......")
+    f_path = f"{file_download_dir}/{waiting_for_download_files_file_name}.json"
+    with open(f_path, 'w') as f:
+        json.dump(waiting_for_download_files, f, ensure_ascii=False)
+    print(f"Write {f_path} complete")
+
+    f_path = f"{file_download_dir}/{waiting_for_download_files_only_name_file_name}.txt"
+    write_array_file(f_path, set(waiting_for_download_files_only_name))
+    print(f"Write {f_path} complete")
+
+    f_path = f"{file_download_dir}/{downloaded_files_only_name_file_name}.txt"
+    write_array_file(f_path, set(downloaded_files_only_name))
+    print(f"Write {f_path} complete")
+
+    f_path = f"{file_download_dir}/{new_download_files_name}.txt"
+    write_array_file(f_path, new_download_files)
+    print(f"Write {f_path} complete")
+
+
+async def download_books(account_waiting_time, accounts, book_detail_url_base, book_list_owner_cookies,
+                         book_set_url_base, download_book_list_id, logout_success_redirect_url, logout_url,
+                         waiting_for_download_files):
     new_download_files = []
-
+    if accounts is None or len(accounts) == 0:
+        return new_download_files
+    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()))
     for account in accounts:
         print(f"{account[0]} login")
         login_success = login(driver, account[0], account[1], logout_url)
 
         if not login_success:
             continue
-        for new_download_file in new_download_files:
-            waiting_for_download_files.pop(new_download_file)
-            # TODO remove
-            print(f"pop download file: {new_download_file}, len(rest): {len(new_download_file)}")
         print(f"{account[0]} login success")
         for waiting_for_download_file in waiting_for_download_files.values():
             try:
@@ -189,39 +223,10 @@ async def main():
         # for download file waiting
         time.sleep(account_waiting_time)
         print(f"{account[0]} logout success")
-
     print("driver.quit()")
     driver.quit()
 
-    print("Starting to get books information......")
-    download_files = await get_download_files(downloaded_dirs, exclude_downloaded_dirs)
-
-    downloaded_files_only_name, waiting_for_download_files, waiting_for_download_files_only_name = await get_file_download_info(
-        book_set_url_base, download_files, exclude_downloaded_file_names, lib_book_set_ids)
-    print("Starting write download info files......")
-    f_path = f"{file_download_dir}/{waiting_for_download_files_file_name}.json"
-    with open(f_path, 'w') as f:
-        json.dump(waiting_for_download_files, f, ensure_ascii=False)
-    print(f"Write {f_path} complete")
-
-    f_path = f"{file_download_dir}/{waiting_for_download_files_only_name_file_name}.txt"
-    waiting_for_download_files_only_name_set = set(waiting_for_download_files_only_name)
-    downloaded_files_only_name_set = set(downloaded_files_only_name)
-
-    with open(f_path, 'w', encoding='utf-8') as f:
-        f.write("[\n")
-        for line in waiting_for_download_files_only_name_set:
-            f.write(f"{line},\n")
-        f.write("]")
-    print(f"Write {f_path} complete")
-
-    f_path = f"{file_download_dir}/{downloaded_files_only_name_file_name}.txt"
-    with open(f_path, 'w', encoding='utf-8') as f:
-        f.write("[\n")
-        for line in downloaded_files_only_name_set:
-            f.write(f"{line},\n")
-        f.write("]")
-    print(f"Write {f_path} complete")
+    return new_download_files
 
 
 async def get_download_files(downloaded_dirs, exclude_downloaded_dirs):
@@ -232,6 +237,10 @@ async def get_download_files(downloaded_dirs, exclude_downloaded_dirs):
 
 
 if __name__ == '__main__':
+    start = time.time()
+
     asyncio.run(main())
 
+    end = time.time()
+    print(f"execution time: {end - start}")
     exit(0)
