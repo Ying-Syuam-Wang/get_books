@@ -214,6 +214,9 @@ async def download_books(account_waiting_time, accounts, book_detail_url_base, b
             except Exception as e:
                 print(f"{account[0]} download failed, err: {e}")
 
+        for downloaded_books in new_download_files:
+            waiting_for_download_files.pop(downloaded_books, None)
+
         driver.get(logout_url)
         time.sleep(10)
         if driver.current_url != logout_success_redirect_url:
